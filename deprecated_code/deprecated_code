@@ -1570,3 +1570,53 @@ whonix_build_apt_sources_mirror="$(grep -oP "(?<=deb ).*(?= "$whonix_build_apt_s
    #sha512sum "$WHONIX_APT_REPOSITORY_FOLDER/pool/"** || true
    #shopt -u globstar dotglob
    #true "${cyan}$BASH_SOURCE INFO: Done, displayed sha512sums. ${reset}"
+
+   if [ "$WHONIX_BUILD_APT_GET_GPGV_TEMP_BIN" = "" ]; then
+      error "Variable WHONIX_BUILD_APT_GET_GPGV_TEMP_BIN is empty!"
+   fi
+
+   apt_get_gpgv_opts+=" -o Dir::Bin::gpg=$WHONIX_BUILD_APT_GET_GPGV_TEMP_BIN "
+   export apt_get_gpgv_opts
+
+   rm --force "$WHONIX_BUILD_APT_GET_GPGV_TEMP_BIN"
+   touch "$WHONIX_BUILD_APT_GET_GPGV_TEMP_BIN"
+
+   if [ "$WHONIX_BUILD_APT_GET_GPGV_LOG" = "" ]; then
+      error "Variable WHONIX_BUILD_APT_GET_GPGV_LOG is empty!"
+   fi
+
+   rm --force "$WHONIX_BUILD_APT_GET_GPGV_LOG"
+   touch "$WHONIX_BUILD_APT_GET_GPGV_LOG"
+
+   ## apt-get calls gpgv (this gpgv wrapper) with --status-fd 3. We redirect
+   ## a copy of file descriptor 3 to the log.
+   ## Variable WHONIX_BUILD_APT_GET_GPGV_LOG gets set and exported in help-steps/variables.
+   echo '#!/bin/bash
+gpgv ${1+"$@"} 3> >(tee --append "$WHONIX_BUILD_APT_GET_GPGV_LOG" >&3)
+echo "-----" >> "$WHONIX_BUILD_APT_GET_GPGV_LOG"' | tee "$WHONIX_BUILD_APT_GET_GPGV_TEMP_BIN" >/dev/null
+
+   chmod +x "$WHONIX_BUILD_APT_GET_GPGV_TEMP_BIN"
+
+aptgetgpgvparsetmp() {
+   errorhandlersetup "errorhandlergeneral" ERR INT TERM
+
+   local gpg_log
+   gpg_log="$(cat "$WHONIX_BUILD_APT_GET_GPGV_LOG")" || true
+   if [ "$gpg_log" = "" ]; then
+      true "${red}${bold}ERROR: variable gpg_log is empty!${reset}"
+      error "See above!"
+      return 0
+   fi
+
+   local aptgetgpgvgrepbadsigpattern
+   aptgetgpgvgrepbadsigpattern="BADSIG\|EXPSIG\|EXPKEYSIG\|REVKEYSIG\|ERRSIG"
+
+   if echo "$gpg_log" | grep -i -q "$aptgetgpgvgrepbadsigpattern" ; then
+      true "${red}${bold}ERROR: ${red}${bold}apt-get: error occurred during the signature verification!${reset}"
+      error "See above!"
+      return 0
+   fi
+}
+
+   rm --force "$WHONIX_BUILD_APT_GET_GPGV_TEMP_BIN"
+   rm --force "$WHONIX_BUILD_APT_GET_GPGV_LOG"
