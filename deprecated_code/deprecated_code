@@ -1737,3 +1737,347 @@ rm --force "$WHONIX_BUILD_APT_GET_GPGV_LOG"
    $CHROOT $WHONIX_BUILD_APT_GET_UPDATE_WRAPPER_TEMP_BIN $apt_sourcelist_empty $apt_sourceparts $apt_timeout_opts $apt_verify_opts $apt_get_gpgv_opts $apt_unattended_opts update
    $CHROOT bash -x -c aptgetgpgvparsetmp
    $CHROOT bash -x -c aptgetgpgvdeletetmp
+
+[ -n "$WHONIX_BUILD_APT_GET_GPGV_TEMP_BIN" ] || WHONIX_BUILD_APT_GET_GPGV_TEMP_BIN="/tmp/whonix_build_apt-get_gpgv"
+export WHONIX_BUILD_APT_GET_GPGV_TEMP_BIN
+
+[ -n "$WHONIX_BUILD_APT_GET_UPDATE_WRAPPER_TEMP_BIN" ] || WHONIX_BUILD_APT_GET_UPDATE_WRAPPER_TEMP_BIN="/tmp/whonix_build_apt-get_wrapper"
+export WHONIX_BUILD_APT_GET_UPDATE_WRAPPER_TEMP_BIN
+
+[ -n "$WHONIX_BUILD_APT_GET_GPGV_LOG" ] || WHONIX_BUILD_APT_GET_GPGV_LOG="/tmp/whonix_build_apt-get_gpgv.log"
+export WHONIX_BUILD_APT_GET_GPGV_LOG
+
+   local gpg_temp_homedir
+   gpg_temp_homedir="$($CHROOT mktemp --directory)"
+
+   ## Apt signing key.
+   sudo -u "$user_name" gpg \
+      --no-options \
+      --no-default-keyring \
+      --homedir "$WHONIX_LOCAL_SIGNING_KEY_FOLDER" \
+      --export "$DEBEMAIL" \
+         | \
+            gpg \
+               --no-options \
+               --no-default-keyring \
+               --homedir "$CHROOT_FOLDER/$gpg_temp_homedir" \
+               --keyring "$CHROOT_FOLDER/etc/apt/trusted.gpg.d/whonix-temporary-local-apt-repository.gpg" \
+               --import
+
+   ## For debugging.
+   gpg \
+      --no-options \
+      --no-default-keyring \
+      --homedir "$WHONIX_LOCAL_SIGNING_KEY_FOLDER" \
+      --keyring "$CHROOT_FOLDER/etc/apt/trusted.gpg.d/whonix-temporary-local-apt-repository.gpg" \
+      --keyid-format "0xlong" \
+      --fingerprint
+
+   ## Debugging.
+   $CHROOT ls -la /etc/apt/trusted.gpg.d
+   $CHROOT apt-key finger
+
+#install-packages() {
+   errorhandlersetup "errorhandlerunchrootunpreventunmount" ERR INT TERM
+
+   if [ "$WHONIX_BUILD_USE_AUTO_LOCAL_SIGNING_KEY" = "1" ]; then
+      if [ ! -f "$WHONIX_LOCAL_SIGNING_KEY_FOLDER/done" ]; then
+         error "${red}${bold}$BASH_SOURCE ERROR: $WHONIX_LOCAL_SIGNING_KEY_FOLDER/done does not exist. Most likely build-steps.d/1200_create-debian-packages has not been run yet.${reset}"
+      fi
+   fi
+
+   ## from install build dependencies script
+   if [ "$WHONIX_BUILD_USE_AUTO_LOCAL_SIGNING_KEY" = "1" ]; then
+      true "${cyan}$BASH_SOURCE INFO: Using ${under}auto local signing key method${eunder}... ${reset}"
+   else
+      true "${cyan}$BASH_SOURCE INFO: Using ${under}custom signing key method${eunder}... ${reset}"
+      if [ "$GPG_AGENT_INFO" = "" ]; then
+         true "${cyan}${bold}INFO: Variable GPG_AGENT_INFO is not set. gnupg-agent will not be available. Did you forget adding -E to sudo?${reset}"
+      fi
+      ## Eventually letting builder cache its gpg passwords early, so we do not
+      ## pause the build process later when reprepro creates the local apt
+      ## repository.
+      sudo -E -u "$user_name" \
+         "$WHONIX_SOURCE_HELP_STEPS_FOLDER/gpg_test_sign"
+   fi
+
+signing_key() {
+   ## We need to create a local signing key for signing our local APT repository. Otherwise,
+   ## apt-get would complain, that the package can not be verified. In theory, signing is not
+   ## required, because the local APT repository never touches any networks. However, ignoring
+   ## this warning while installing the meta package, which pull the other packages, could
+   ## make apt-get ignore if those packages can not be verified either. Shipping an already
+   ## created gpg snake oil (because known to the public) secret key is no option either,
+   ## because anyone could get this key, which also needs to be added to apt-key. In that case,
+   ## anyone could sign packages with this snake oil key. Therefore we play it safe and
+   ## create a local signing key on the build machine.
+
+   ## We only automatically create am auto local signing key, in case the builder did not
+   ## provide a custom folder for WHONIX_LOCAL_SIGNING_KEY_FOLDER. This is determined in
+   ## help-steps/variables.
+   if [ "$WHONIX_BUILD_USE_AUTO_LOCAL_SIGNING_KEY" = "1" ]; then
+      true "${cyan}$BASH_SOURCE INFO: Using ${under}auto local signing key method${eunder}... ${reset}"
+
+      ## Check, if we previously already created a local OpenPGP signing key.
+      if [ ! -f "$WHONIX_LOCAL_SIGNING_KEY_FOLDER/done" ]; then
+         true "${cyan}$BASH_SOURCE INFO: We do not yet have a local OpenPGP signing key for our local APT repository. Creating one... ${reset}"
+
+         sudo -E -u "$user_name" mkdir --parents "$WHONIX_LOCAL_SIGNING_KEY_FOLDER"
+
+         ## chmod 700, so gpg will not complain about folder permissions
+         sudo -E -u "$user_name" chmod 700 "$WHONIX_LOCAL_SIGNING_KEY_FOLDER"
+
+         ## http://www.gnupg.org/documentation/manuals/gnupg-devel/Unattended-GPG-key-generation.html
+
+         ## https://github.com/ioerror/torbirdy/blob/master/gpg.conf
+
+         echo "
+            Key-Type: RSA
+            Key-Length: 4096
+            Subkey-Type: RSA
+            Subkey-Length: 4096
+            Name-Real: Whonix auto generated local APT signing key
+            Name-Email: whonix@local-signing.key
+            Expire-Date: 0
+            Preferences: SHA512 SHA384 SHA256 SHA224 AES256 AES192 AES CAST5 ZLIB BZIP2 ZIP Uncompressed
+         " | sudo -E -u "$user_name" gpg \
+                                       --no-options \
+                                       --no-emit-version \
+                                       --no-comments \
+                                       --display-charset utf-8 \
+                                       --keyserver hkp://qdigse2yzvuglcix.onion \
+                                       --personal-digest-preferences SHA512 \
+                                       --cert-digest-algo SHA512 \
+                                       --default-preference-list "SHA512 SHA384 SHA256 SHA224 AES256 AES192 AES CAST5 ZLIB BZIP2 ZIP Uncompressed" \
+                                       --keyserver-options no-honor-keyserver-url \
+                                       --fixed-list-mode \
+                                       --keyid-format 0xlong \
+                                       --list-options show-uid-validity \
+                                       --sig-notation issuer-fpr@notations.openpgp.fifthhorseman.net=%g \
+                                       --no-default-keyring \
+                                       --homedir "$WHONIX_LOCAL_SIGNING_KEY_FOLDER" \
+                                       --batch \
+                                       --gen-key
+
+         sudo -E -u "$user_name" touch "$WHONIX_LOCAL_SIGNING_KEY_FOLDER/done"
+
+         true "${cyan}$BASH_SOURCE INFO: Created local OpenPGP signing key for our local APT repository. ${reset}"
+      else
+         true "${cyan}$BASH_SOURCE INFO: We already have a local OpenPGP signing key for our local APT repository. ${reset}"
+      fi
+   else
+      true "${cyan}$BASH_SOURCE INFO: Using ${under}custom signing key method${eunder}... ${reset}"
+   fi
+
+   if [ ! -d "$WHONIX_LOCAL_SIGNING_KEY_FOLDER" ]; then
+      msg="ERROR: WHONIX_LOCAL_SIGNING_KEY_FOLDER $WHONIX_LOCAL_SIGNING_KEY_FOLDER does not exist."
+      error "WHONIX_LOCAL_SIGNING_KEY_FOLDER $WHONIX_LOCAL_SIGNING_KEY_FOLDER does not exist."
+   else
+      true "INFO: WHONIX_LOCAL_SIGNING_KEY_FOLDER: $WHONIX_LOCAL_SIGNING_KEY_FOLDER exists, ok."
+   fi
+
+   ## Just output list of secret keys in that very folder in case that ever breaks and someone ever sends
+   ## a build log, this will help with debugging.
+   sudo -E -u "$user_name" gpg \
+                             --no-options \
+                             --no-default-keyring \
+                             --homedir "$WHONIX_LOCAL_SIGNING_KEY_FOLDER" \
+                             --keyid-format "0xlong" \
+                             --fingerprint \
+                             --list-secret-keys
+}
+
+   ########################################################
+   ## install some build dependencies from Debian testing #
+   ########################################################
+
+   ## {{ grml-debootstrap
+
+   ## Installing newer grml-debootstrap, because it contains the locales fix.
+   ## This snippet can be removed in Debain jessie.
+
+   if [ "$ANON_BUILD_INSTALL_TO_ROOT" = "1" ] || [ "$WHONIX_BUILD_QUBES" = "true" ]; then
+      true "INFO: ANON_BUILD_INSTALL_TO_ROOT is set to 1 or WHONIX_BUILD_QUBES is set to true, install of grml-debootstrap not required, ok."
+   else
+      local grml_debootstrap_version_installed grml_debootstrap_version_minimum_required dpkg_exit_code
+      grml_debootstrap_version_installed="$(dpkg-query --show --showformat='${Version}' "grml-debootstrap")"
+      grml_debootstrap_version_minimum_required="0.67"
+      dpkg_exit_code="0"
+      dpkg --compare-versions "$grml_debootstrap_version_installed" ge "$grml_debootstrap_version_minimum_required" || { dpkg_exit_code="$?" ; true; };
+      if [ "$dpkg_exit_code" = "0" ]; then
+         true "INFO: grml-debootstrap installed version $grml_debootstrap_version_installed is equal or higher $grml_debootstrap_version_minimum_required already installed, ok."
+      else
+         true "INFO: grml-debootstrap installed version $grml_debootstrap_version_installed not equal or higher $grml_debootstrap_version_minimum_required install required, ok."
+         local install_from_testing_required="1"
+      fi
+   fi
+
+   ## }}
+
+   ## {{ sleuthkit
+
+   #sleuthkit_version="$(dpkg-query --show --showformat='${Version}' "sleuthkit")"
+   #local dpkg_exit_code="0"
+   #dpkg --compare-versions "$sleuthkit_version" ge "4.1.3" || { dpkg_exit_code="$?" ; true; };
+   #if [ "$dpkg_exit_code" = "0" ]; then
+      #true "INFO: sleuthkit version equal or higher 4.1.3 already installed, ok."
+   #else
+      #true "INFO: sleuthkit version equal or higher 4.1.3 install required, ok."
+      #local install_from_testing_required="1"
+   #fi
+
+   ## }}
+
+   ## Check if config-package-dev with debhelper support is installed.
+   ## (Build Dependency for Whonix Build Script for creating .deb packages.)
+   if [ ! -d "/usr/share/doc/config-package-dev/examples/debhelper/" ]; then
+      local install_from_testing_required="1"
+      true "INFO: config_package_dev with debhelper support install required, ok."
+   else
+      true "INFO: config-package-dev with debhelper support already installed, ok."
+   fi
+
+   ## Check if dh-systemd is installed.
+   ## (Build Dependency for qubes-whonix package.)
+   if dpkg-query --show dh-systemd >/dev/null 2>&1 ; then
+      true "INFO: dh-systemd already installed, ok."
+   else
+      local install_from_testing_required="1"
+      true "INFO: dh-systemd install required, ok."
+   fi
+
+   if [ "$install_from_testing_required" = "1" ]; then
+      local TEMP="/etc/apt/sources.list.d/whonix_temp.list"
+      local TEMP2="jessie"
+
+      if [ ! "$whonix_build_on_operating_system" = "jessie" ]; then
+         if [ "$whonix_build_on_operating_system" = "ubuntu" ]; then
+            ## Hack for Ubuntu 12.04 Precise Pangolin / Travis CI.
+            echo "deb http://us.archive.ubuntu.com/ubuntu/ $whonix_build_apt_newer_release_codename main universe" > "$TEMP"
+            TEMP2="$whonix_build_apt_newer_release_codename"
+         else
+            ## Hack for Debian Wheezy.
+            echo "deb http://ftp.us.debian.org/debian $TEMP2 main" > "$TEMP"
+         fi
+
+         ## Update package lists to include temporary repository.
+         $apt_get_update_wrapper_source_path_full \
+            $apt_timeout_opts \
+            -o Dir::Etc::sourcelist="$TEMP" \
+            -o Dir::Etc::sourceparts="-" \
+            -o APT::Get::List-Cleanup="0" \
+            $apt_get_gpgv_opts \
+            $apt_misc_opts \
+            update
+      fi
+
+      apt-get \
+         --yes \
+         $apt_timeout_opts \
+         $apt_unattended_opts \
+         $apt_misc_opts \
+         -o APT::Default-Release="$whonix_build_apt_stable_release" \
+         install \
+         "config-package-dev/$TEMP2" \
+         "grml-debootstrap/$TEMP2" \
+         "dh-systemd/$TEMP2"
+
+         #"sleuthkit/$TEMP2"
+
+      if [ "$CI" = "true" ]; then
+         ## Small hack for CI.
+         ## Get newer faketime, because faketime 0.8 segfaults on Ubuntu.
+         apt-get --yes \
+            $apt_timeout_opts \
+            $apt_unattended_opts \
+            $apt_misc_opts \
+            --target-release "$TEMP2" \
+            install \
+            faketime
+      fi
+
+      if [ ! "$whonix_build_on_operating_system" = "jessie" ]; then
+         ## Removing temporary repository.
+         rm --force "$TEMP"
+
+         ## Update package lists again to get rid of temporary repository.
+         apt-get \
+            --no-download \
+            --list-cleanup \
+            update
+      fi
+   fi
+
+   ## }}}
+
+
+Package: anon-host-additions
+Architecture: all
+Depends: anon-shared-build-upgrade-torsocks,
+ anon-shared-build-remember-sources,
+ anon-shared-build-ban-nonfree,
+ anon-shared-build-sanity-checks,
+ anon-shared-packages-dependencies,
+ anon-shared-packages-recommended,
+ whonix-shared-packages-dependencies,
+ whonix-shared-packages-recommended,
+ anon-shared-build-inst-tb,
+ ${misc:Depends}
+Description: Host Additions for Anon Host Operating Systems
+ A metapackage, which installs packages, for a Anon host operating system.
+ .
+ Supposed to be installed on operating systems that host anonymity preserving
+ software (such as whonix-host-virtualbox or whonix-host-qemu-kvm) for better
+ anonymity, privacy, security and usability.
+ .
+ It will install build chroot scripts, but not run them.
+ .
+ Feel free to remove if you know what you are doing.
+
+Package: whonix-host-additions
+Architecture: all
+Depends: anon-host-additions, whonix-host-firewall, ${misc:Depends}
+# whonix-host-packages-dependencies-pre,
+Description: Packages for Whonix Hosts
+ A metapackage, which installs packages Whonix Host Additions.
+ .
+ Supposed to be installed on hosts that run Whonix inside virtual machines,
+ such as VirtualBox, QEMU or KVM. Installs anon-host-additions and Whonix Host
+ Firewall. For better anonymity, privacy, security and usability.
+ .
+ Feel free to remove if you know what you are doing.
+
+Package: whonix-host-shared-dependencies
+Architecture: all
+Depends: whonix-host-additions, anon-shared-desktop, anon-shared-desktop-kde,
+ anon-shared-kde-accessibility, ${misc:Depends}
+# whonix-host-packages-dependencies-pre
+Description: Whonix Host Shared
+ A metapackage, which installs packages, for a Whonix host operating system.
+ .
+ Supposed to be installed on systems that host Whonix or Whonix hosts.
+ .
+ Feel free to remove if you know what you are doing.
+
+Package: whonix-host-virtualbox
+Architecture: all
+Pre-Depends: whonix-legacy
+Depends: whonix-host-shared, virtualbox, ${misc:Depends}
+Suggests: apparmor-profile-virtualbox
+Description: Whonix Host Packages for VirtualBox Hosts
+ A metapackage, which installs packages, for a Whonix host operating system
+ using VirtualBox.
+ .
+ Feel free to remove if you know what you are doing.
+
+Package: whonix-host-qemu-kvm
+Architecture: all
+Pre-Depends: whonix-legacy
+Depends: whonix-host-shared, qemu-kvm, libvirt-bin, virt-manager,
+ whonix-libvirt, ${misc:Depends}
+Suggests: ksm
+Description: Whonix Host Packages for QEMU or KVM hosts
+ A metapackage, which installs packages, for a Whonix host operating system
+ using KVM or QEMU.
+ .
+ Feel free to remove if you know what you are doing.
